@@ -94,3 +94,41 @@ macro_rules! no_kwargs {
         }
     };
 }
+
+/// Attempts to get the chain of attributes, returning an option that contains the value of
+/// the last one.
+///
+/// ```rust,ignore
+/// py_get_item!(($val).$attr1.$attr2.$...)
+/// ```
+///
+/// # Examples
+///
+/// ```
+/// # #[macro_use] extern crate rustpython_vm;
+/// # fn main() {
+/// # let mut vm = rustpython_vm::VirtualMachine::new();
+/// let abs_func = py_get_item!((vm.sys_module).modules.__builtins__.abs);
+/// # }
+/// ```
+#[macro_export]
+macro_rules! py_get_item {
+    ($val:ident.$($attr:ident).*) => {
+        py_get_item!(($val).$($attr).*)
+    };
+    (($val:expr).$attr:ident.$($rest:ident).*) => {{
+        use $crate::pyobject::DictProtocol;
+        match $val.get_item(stringify!($attr)) {
+            Some(val) => {
+                py_get_item!((val).$($rest).*)
+            },
+            None => None,
+        }
+    }};
+    (($val:expr).$attr:ident) => {
+        py_get_item!(($val).$attr.)
+    };
+    (($val:expr).) => {
+        Some($val)
+    };
+}
