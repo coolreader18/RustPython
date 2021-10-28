@@ -37,7 +37,6 @@ impl PyNativeFuncDef {
         PyRef::new_ref(
             PyBuiltinMethod { value: self, class },
             ctx.types.method_descriptor_type.clone(),
-            None,
         )
     }
     pub fn build_classmethod(self, ctx: &PyContext, class: PyTypeRef) -> PyRef<PyClassMethod> {
@@ -81,11 +80,7 @@ impl PyBuiltinFunction {
     }
 
     pub fn into_ref(self, ctx: &PyContext) -> PyRef<Self> {
-        PyRef::new_ref(
-            self,
-            ctx.types.builtin_function_or_method_type.clone(),
-            None,
-        )
+        PyRef::new_ref(self, ctx.types.builtin_function_or_method_type.clone())
     }
 
     pub fn as_func(&self) -> &PyNativeFunc {

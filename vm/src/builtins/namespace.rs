@@ -1,4 +1,5 @@
 use super::PyTypeRef;
+use crate::common::field_offset;
 use crate::{
     builtins::PyDict,
     function::FuncArgs,
@@ -13,28 +14,36 @@ use crate::{
 /// SimpleNamespace(**kwargs)
 #[pyclass(module = false, name = "SimpleNamespace")]
 #[derive(Debug)]
-pub struct PyNamespace {}
+pub struct PyNamespace {
+    dict: crate::InstanceDict,
+}
 
 impl PyValue for PyNamespace {
     fn class(vm: &VirtualMachine) -> &PyTypeRef {
         &vm.ctx.types.namespace_type
     }
+    const DICT: Option<field_offset::FieldOffset<Self, crate::InstanceDict>> =
+        Some(field_offset!(Self, dict));
 }
 
 impl Constructor for PyNamespace {
     type Args = FuncArgs;
 
     fn py_new(cls: PyTypeRef, _args: Self::Args, vm: &VirtualMachine) -> PyResult {
-        PyNamespace {}.into_pyresult_with_type(vm, cls)
+        PyNamespace {
+            dict: vm.ctx.new_dict().into(),
+        }
+        .into_pyresult_with_type(vm, cls)
     }
 }
 
 impl PyNamespace {
     pub fn new_ref(ctx: &PyContext) -> PyRef<Self> {
         PyRef::new_ref(
-            Self {},
+            Self {
+                dict: ctx.new_dict().into(),
+            },
             ctx.types.namespace_type.clone(),
-            Some(ctx.new_dict()),
         )
     }
 }
@@ -62,7 +71,7 @@ impl PyNamespace {
         };
 
         let repr = if let Some(_guard) = ReprGuard::enter(vm, zelf.as_object()) {
-            let dict = zelf.as_object().dict().unwrap();
+            let dict = zelf.dict.get();
             let mut parts = Vec::with_capacity(dict.len());
             for (key, value) in dict {
                 let k = &key.repr(vm)?;
@@ -86,10 +95,7 @@ impl Comparable for PyNamespace {
         vm: &VirtualMachine,
     ) -> PyResult<PyComparisonValue> {
         let other = class_or_notimplemented!(Self, other);
-        let (d1, d2) = (
-            zelf.as_object().dict().unwrap(),
-            other.as_object().dict().unwrap(),
-        );
+        let (d1, d2) = (zelf.dict.get(), other.dict.get());
         PyDict::cmp(&d1, d2.as_object(), op, vm)
     }
 }

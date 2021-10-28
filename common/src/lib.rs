@@ -7,6 +7,7 @@ pub mod bytes;
 pub mod char;
 pub mod cmp;
 pub mod encodings;
+pub mod field_offset;
 pub mod float_ops;
 pub mod hash;
 pub mod linked_list;

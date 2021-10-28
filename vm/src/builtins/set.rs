@@ -400,7 +400,7 @@ impl PySet {
     pub fn new_ref(ctx: &PyContext) -> PyRef<Self> {
         // Initialized empty, as calling __hash__ is required for adding each object to the set
         // which requires a VM context - this is done in the set code itself.
-        PyRef::new_ref(Self::default(), ctx.types.set_type.clone(), None)
+        PyRef::new_ref(Self::default(), ctx.types.set_type.clone())
     }
 }
 

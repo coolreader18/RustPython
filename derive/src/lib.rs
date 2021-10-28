@@ -112,7 +112,7 @@ pub fn py_freeze(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     result_to_tokens(compile_bytecode::impl_py_freeze(input.into()))
 }
 
-#[proc_macro_derive(PyValue)]
+#[proc_macro_derive(PyValue, attributes(dict, weaklist))]
 pub fn pyvalue(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     result_to_tokens(pyvalue::impl_pyvalue(input))

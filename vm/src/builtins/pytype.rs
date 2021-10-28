@@ -5,13 +5,14 @@ use super::{
 use crate::common::{
     ascii,
     borrow::BorrowedValue,
+    field_offset,
     lock::{PyRwLock, PyRwLockReadGuard},
 };
 use crate::{
     function::{FuncArgs, KwArgs, OptionalArg},
     types::{Callable, GetAttr, PyTypeFlags, PyTypeSlots, SetAttr},
     IdProtocol, PyAttributes, PyClassImpl, PyContext, PyLease, PyObjectRef, PyObjectWeak, PyRef,
-    PyResult, PyValue, StaticType, TypeProtocol, VirtualMachine,
+    PyResult, PyValue, StaticType, TypeProtocol, VirtualMachine, WeakRefList,
 };
 use itertools::Itertools;
 use std::collections::HashSet;
@@ -29,6 +30,7 @@ pub struct PyType {
     pub subclasses: PyRwLock<Vec<PyObjectWeak>>,
     pub attributes: PyRwLock<PyAttributes>,
     pub slots: PyTypeSlots,
+    pub weakreflist: WeakRefList,
 }
 
 impl fmt::Display for PyType {
@@ -49,6 +51,9 @@ impl PyValue for PyType {
     fn class(vm: &VirtualMachine) -> &PyTypeRef {
         &vm.ctx.types.type_type
     }
+
+    const WEAKREFLIST: Option<field_offset::FieldOffset<Self, WeakRefList>> =
+        Some(field_offset!(Self, weakreflist));
 }
 
 impl PyType {
@@ -106,9 +111,9 @@ impl PyType {
                 subclasses: PyRwLock::default(),
                 attributes: PyRwLock::new(attrs),
                 slots,
+                weakreflist: WeakRefList::new(),
             },
             metaclass,
-            None,
         );
 
         for attr_name in new_type.attributes.read().keys() {
@@ -485,6 +490,9 @@ impl PyType {
         // a class has __slots__ defined).
         let flags = PyTypeFlags::heap_type_flags() | PyTypeFlags::HAS_DICT;
         let slots = PyTypeSlots::from_flags(flags);
+        if base.is(&vm.ctx.types.object_type) {
+            slots.new.store(Some(super::object::PyUserObject::slot_new));
+        }
 
         let typ = Self::new_verbose_ref(name.as_str(), base, bases, attributes, slots, metatype)
             .map_err(|e| vm.new_type_error(e))?;

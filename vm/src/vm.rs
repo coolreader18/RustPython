@@ -27,8 +27,9 @@ use crate::{
     signal::NSIG,
     stdlib,
     types::PyComparisonOp,
-    IdProtocol, ItemProtocol, PyArithmeticValue, PyContext, PyLease, PyMethod, PyObject,
-    PyObjectRef, PyObjectWrap, PyRef, PyRefExact, PyResult, PyValue, TryFromObject, TypeProtocol,
+    IdProtocol, ItemProtocol, PyArithmeticValue, PyContext, PyGenericObject, PyLease, PyMethod,
+    PyObject, PyObjectRef, PyObjectWrap, PyRef, PyRefExact, PyResult, PyValue, TryFromObject,
+    TypeProtocol,
 };
 use crossbeam_utils::atomic::AtomicCell;
 use num_traits::{Signed, ToPrimitive};
@@ -247,13 +248,8 @@ impl VirtualMachine {
 
         // make a new module without access to the vm; doesn't
         // set __spec__, __loader__, etc. attributes
-        let new_module = || {
-            PyRef::new_ref(
-                PyModule {},
-                ctx.types.module_type.clone(),
-                Some(ctx.new_dict()),
-            )
-        };
+        let new_module =
+            || PyRef::new_ref(PyModule::new(ctx.new_dict()), ctx.types.module_type.clone());
 
         // Hard-core modules:
         let builtins = new_module();
@@ -602,14 +598,14 @@ impl VirtualMachine {
     }
 
     pub fn new_module(&self, name: &str, dict: PyDictRef, doc: Option<&str>) -> PyObjectRef {
-        let module = PyRef::new_ref(PyModule {}, self.ctx.types.module_type.clone(), Some(dict));
+        let module = PyModule::new(dict);
         module.init_module_dict(
             self.new_pyobj(name.to_owned()),
             doc.map(|doc| self.new_pyobj(doc.to_owned()))
                 .unwrap_or_else(|| self.ctx.none()),
             self,
         );
-        module.into_object()
+        PyGenericObject::new(module, self.ctx.types.module_type.clone())
     }
 
     /// Instantiate an exception with arguments.
@@ -626,7 +622,6 @@ impl VirtualMachine {
             // see `OSError` as an example:
             PyBaseException::new(args, self),
             exc_type,
-            Some(self.ctx.new_dict()),
         )
     }
 

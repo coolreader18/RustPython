@@ -1,20 +1,26 @@
 use super::pystr::IntoPyStrRef;
 use super::{PyDictRef, PyStr, PyStrRef, PyTypeRef};
+use crate::common::field_offset::FieldOffset;
 use crate::{
     function::{FuncArgs, IntoPyObject},
     types::GetAttr,
-    ItemProtocol, PyClassImpl, PyContext, PyObjectRef, PyObjectView, PyRef, PyResult, PyValue,
-    VirtualMachine,
+    InstanceDict, ItemProtocol, PyClassImpl, PyContext, PyObjectRef, PyObjectView, PyRef, PyResult,
+    PyValue, VirtualMachine,
 };
 
 #[pyclass(module = false, name = "module")]
 #[derive(Debug)]
-pub struct PyModule {}
+pub struct PyModule {
+    dict: InstanceDict,
+}
 
 impl PyValue for PyModule {
     fn class(vm: &VirtualMachine) -> &PyTypeRef {
         &vm.ctx.types.module_type
     }
+
+    const DICT: Option<FieldOffset<Self, InstanceDict>> =
+        Some(crate::common::field_offset!(Self, dict));
 }
 
 #[derive(FromArgs)]
@@ -24,20 +30,39 @@ struct ModuleInitArgs {
     doc: Option<PyStrRef>,
 }
 
-#[pyimpl(with(GetAttr), flags(BASETYPE, HAS_DICT))]
+#[pyimpl(with(GetAttr), generic_setattr, flags(BASETYPE, HAS_DICT))]
 impl PyModule {
-    // pub(crate) fn new(d: PyDictRef) -> Self {
-    //     PyModule { dict: d.into() }
-    // }
+    pub(crate) fn new(d: PyDictRef) -> Self {
+        PyModule { dict: d.into() }
+    }
 
-    // #[inline]
-    // pub fn dict(&self) -> PyDictRef {
-    //     self.dict.get()
-    // }
+    #[inline]
+    pub fn dict(&self) -> PyDictRef {
+        self.dict.get()
+    }
 
     #[pyslot]
     fn slot_new(cls: PyTypeRef, _args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-        PyModule {}.into_pyresult_with_type(vm, cls)
+        PyModule::new(vm.ctx.new_dict()).into_pyresult_with_type(vm, cls)
+    }
+
+    pub(crate) fn init_module_dict(
+        &self,
+        name: PyObjectRef,
+        doc: PyObjectRef,
+        vm: &VirtualMachine,
+    ) {
+        let dict = self.dict.get();
+        dict.set_item("__name__", name, vm)
+            .expect("Failed to set __name__ on module");
+        dict.set_item("__doc__", doc, vm)
+            .expect("Failed to set __doc__ on module");
+        dict.set_item("__package__", vm.ctx.none(), vm)
+            .expect("Failed to set __package__ on module");
+        dict.set_item("__loader__", vm.ctx.none(), vm)
+            .expect("Failed to set __loader__ on module");
+        dict.set_item("__spec__", vm.ctx.none(), vm)
+            .expect("Failed to set __spec__ on module");
     }
 
     #[pymethod(magic)]
@@ -55,7 +80,7 @@ impl PyModule {
         {
             return Ok(attr);
         }
-        if let Ok(getattr) = zelf.dict().get_item("__getattr__", vm) {
+        if let Ok(getattr) = zelf.dict.get().get_item("__getattr__", vm) {
             return vm.invoke(&getattr, (name,));
         }
         let module_name = if let Some(name) = Self::name(zelf.to_owned(), vm) {
@@ -91,30 +116,6 @@ impl PyModule {
 }
 
 impl PyObjectView<PyModule> {
-    // TODO: to be replaced by the commented-out dict method above once dictoffsets land
-    pub fn dict(&self) -> PyDictRef {
-        self.as_object().dict().unwrap()
-    }
-    // TODO: should be on PyModule, not PyObjectView<PyModule>
-    pub(crate) fn init_module_dict(
-        &self,
-        name: PyObjectRef,
-        doc: PyObjectRef,
-        vm: &VirtualMachine,
-    ) {
-        let dict = self.dict();
-        dict.set_item("__name__", name, vm)
-            .expect("Failed to set __name__ on module");
-        dict.set_item("__doc__", doc, vm)
-            .expect("Failed to set __doc__ on module");
-        dict.set_item("__package__", vm.ctx.none(), vm)
-            .expect("Failed to set __package__ on module");
-        dict.set_item("__loader__", vm.ctx.none(), vm)
-            .expect("Failed to set __loader__ on module");
-        dict.set_item("__spec__", vm.ctx.none(), vm)
-            .expect("Failed to set __spec__ on module");
-    }
-
     pub fn get_attr(&self, attr_name: impl IntoPyStrRef, vm: &VirtualMachine) -> PyResult {
         PyModule::getattr_inner(self, attr_name.into_pystr_ref(vm), vm)
     }

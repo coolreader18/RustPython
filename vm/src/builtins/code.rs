@@ -176,7 +176,7 @@ impl PyCode {
     /// this is giving you a type error even though you've passed a `CodeObject`, try
     /// [`vm.new_code_object()`](VirtualMachine::new_code_object) instead.
     pub fn new_ref(code: CodeObject, ctx: &PyContext) -> PyRef<Self> {
-        PyRef::new_ref(PyCode { code }, ctx.types.code_type.clone(), None)
+        PyRef::new_ref(PyCode { code }, ctx.types.code_type.clone())
     }
 }
 

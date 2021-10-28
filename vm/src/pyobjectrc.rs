@@ -59,6 +59,9 @@ struct Erased;
 struct PyObjVTable {
     drop_dealloc: unsafe fn(&mut PyObject),
     debug: unsafe fn(&PyObject, &mut fmt::Formatter) -> fmt::Result,
+    // TODO: should be memory offsets once https://docs.rs/memoffset can be const
+    get_weakreflist: unsafe fn(&PyObject) -> Option<&WeakRefList>,
+    get_dict: unsafe fn(&PyObject) -> Option<&InstanceDict>,
 }
 unsafe fn drop_dealloc_obj<T: PyObjectPayload>(x: &mut PyObject) {
     Box::from_raw(x as *mut PyObject as *mut PyInner<T>);
@@ -66,6 +69,12 @@ unsafe fn drop_dealloc_obj<T: PyObjectPayload>(x: &mut PyObject) {
 unsafe fn debug_obj<T: PyObjectPayload>(x: &PyObject, f: &mut fmt::Formatter) -> fmt::Result {
     let x = &*(x as *const PyObject as *const PyInner<T>);
     fmt::Debug::fmt(x, f)
+}
+unsafe fn get_weakreflist_obj<T: PyObjectPayload>(x: &PyObject) -> Option<&WeakRefList> {
+    T::WEAKREFLIST.map(|off| off.apply(x.downcast_unchecked_ref::<T>()))
+}
+unsafe fn get_dict_obj<T: PyObjectPayload>(x: &PyObject) -> Option<&InstanceDict> {
+    T::DICT.map(|off| off.apply(x.downcast_unchecked_ref::<T>()))
 }
 
 impl PyObjVTable {
@@ -78,6 +87,8 @@ impl PyObjVTable {
             const VTABLE: PyObjVTable = PyObjVTable {
                 drop_dealloc: drop_dealloc_obj::<T>,
                 debug: debug_obj::<T>,
+                get_weakreflist: get_weakreflist_obj::<T>,
+                get_dict: get_dict_obj::<T>,
             };
         }
         &Helper::<T>::VTABLE
@@ -95,8 +106,6 @@ struct PyInner<T> {
     vtable: &'static PyObjVTable,
 
     typ: PyRwLock<PyTypeRef>, // __class__ member
-    dict: Option<InstanceDict>,
-    weaklist: WeakRefList,
 
     payload: T,
 }
@@ -107,7 +116,7 @@ impl<T: fmt::Debug> fmt::Debug for PyInner<T> {
     }
 }
 
-struct WeakRefList {
+pub struct WeakRefList {
     inner: OnceBox<PyMutex<WeakListInner>>,
 }
 
@@ -165,7 +174,7 @@ impl WeakRefList {
             callback: UnsafeCell::new(callback),
             hash: Radium::new(-1),
         };
-        let weak = PyRef::new_ref(obj, cls, dict);
+        let weak = PyRef::new_ref(obj, cls);
         // SAFETY: we don't actually own the PyObjectWeaks inside `list`, and every time we take
         // one out of the list we immediately wrap it in ManuallyDrop
         inner.list.push_front(unsafe { ptr::read(&weak) });
@@ -307,7 +316,7 @@ impl Drop for PyWeak {
 }
 
 #[derive(Debug)]
-struct InstanceDict {
+pub struct InstanceDict {
     d: PyRwLock<PyDictRef>,
 }
 
@@ -352,14 +361,12 @@ pub struct PyGenericObject<T> {
 
 impl<T: PyObjectPayload> PyGenericObject<T> {
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(payload: T, typ: PyTypeRef, dict: Option<PyDictRef>) -> PyObjectRef {
+    pub fn new(payload: T, typ: PyTypeRef) -> PyObjectRef {
         let inner = PyInner {
             refcount: RefCount::new(),
             typeid: TypeId::of::<T>(),
             vtable: PyObjVTable::of::<T>(),
             typ: PyRwLock::new(typ),
-            dict: dict.map(InstanceDict::new),
-            weaklist: WeakRefList::new(),
             payload,
         };
         PyObjectRef::new(PyGenericObject { inner })
@@ -517,7 +524,7 @@ impl PyObjectRef {
 impl PyObject {
     #[inline]
     fn weakreflist(&self) -> Option<&WeakRefList> {
-        Some(&self.0.weaklist)
+        unsafe { (self.0.vtable.get_weakreflist)(self) }
     }
 
     pub(crate) fn downgrade_with_typ_opt(
@@ -594,8 +601,8 @@ impl PyObject {
     }
 
     #[inline]
-    fn instance_dict(&self) -> Option<&InstanceDict> {
-        self.0.dict.as_ref()
+    pub fn instance_dict(&self) -> Option<&InstanceDict> {
+        unsafe { (self.0.vtable.get_dict)(self) }
     }
 
     pub fn dict(&self) -> Option<PyDictRef> {
@@ -885,8 +892,8 @@ impl<T: PyObjectPayload> PyRef<T> {
     }
 
     // ideally we'd be able to define this in pyobject.rs, but method visibility rules are weird
-    pub fn new_ref(payload: T, typ: crate::builtins::PyTypeRef, dict: Option<PyDictRef>) -> Self {
-        let obj = PyGenericObject::new(payload, typ, dict);
+    pub fn new_ref(payload: T, typ: crate::builtins::PyTypeRef) -> Self {
+        let obj = PyGenericObject::new(payload, typ);
         // SAFETY: we just created the object from a payload of type T
         unsafe { Self::from_obj_unchecked(obj) }
     }
@@ -993,6 +1000,7 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
             subclasses: PyRwLock::default(),
             attributes: PyRwLock::new(PyAttributes::default()),
             slots: PyType::make_slots(),
+            weakreflist: WeakRefList::default(),
         };
         let object_payload = PyType {
             base: None,
@@ -1001,14 +1009,13 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
             subclasses: PyRwLock::default(),
             attributes: PyRwLock::new(PyAttributes::default()),
             slots: object::PyBaseObject::make_slots(),
+            weakreflist: WeakRefList::default(),
         };
         let type_type_ptr = Box::into_raw(Box::new(partially_init!(
             PyInner::<PyType> {
                 refcount: RefCount::new(),
                 typeid: TypeId::of::<PyType>(),
                 vtable: PyObjVTable::of::<PyType>(),
-                dict: None,
-                weaklist: WeakRefList::new(),
                 payload: type_payload,
             },
             Uninit { typ }
@@ -1018,8 +1025,6 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
                 refcount: RefCount::new(),
                 typeid: TypeId::of::<PyType>(),
                 vtable: PyObjVTable::of::<PyType>(),
-                dict: None,
-                weaklist: WeakRefList::new(),
                 payload: object_payload,
             },
             Uninit { typ },
@@ -1061,8 +1066,9 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
         subclasses: PyRwLock::default(),
         attributes: PyRwLock::default(),
         slots: PyWeak::make_slots(),
+        weakreflist: WeakRefList::default(),
     };
-    let weakref_type = PyRef::new_ref(weakref_type, type_type.clone(), None);
+    let weakref_type = PyRef::new_ref(weakref_type, type_type.clone());
 
     object_type.subclasses.write().push(
         type_type

@@ -1,5 +1,5 @@
 use self::types::{PyBaseException, PyBaseExceptionRef};
-use crate::common::lock::PyRwLock;
+use crate::common::{field_offset, field_offset::FieldOffset, lock::PyRwLock};
 use crate::{
     builtins::{
         traceback::PyTracebackRef, PyNone, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType, PyTypeRef,
@@ -30,6 +30,8 @@ impl PyValue for PyBaseException {
     fn class(vm: &VirtualMachine) -> &PyTypeRef {
         &vm.ctx.exceptions.base_exception_type
     }
+
+    const DICT: Option<FieldOffset<Self, crate::InstanceDict>> = Some(field_offset!(Self, dict));
 }
 
 impl VirtualMachine {
@@ -410,10 +412,11 @@ macro_rules! extend_exception {
     };
 }
 
-#[pyimpl(flags(BASETYPE, HAS_DICT))]
+#[pyimpl(generic_setattr, flags(BASETYPE, HAS_DICT))]
 impl PyBaseException {
     pub(crate) fn new(args: Vec<PyObjectRef>, vm: &VirtualMachine) -> PyBaseException {
         PyBaseException {
+            dict: vm.ctx.new_dict().into(),
             traceback: PyRwLock::new(None),
             cause: PyRwLock::new(None),
             context: PyRwLock::new(None),
@@ -978,6 +981,7 @@ pub(super) mod types {
 
     #[pyclass(module = false, name = "BaseException")]
     pub struct PyBaseException {
+        pub(super) dict: crate::InstanceDict,
         pub(super) traceback: PyRwLock<Option<PyTracebackRef>>,
         pub(super) cause: PyRwLock<Option<PyRef<Self>>>,
         pub(super) context: PyRwLock<Option<PyRef<Self>>>,

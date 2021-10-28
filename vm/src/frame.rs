@@ -1656,6 +1656,7 @@ impl ExecutingFrame<'_> {
             closure,
             defaults,
             kw_only_defaults,
+            vm.ctx.new_dict().into(),
         )
         .into_object(vm);
 

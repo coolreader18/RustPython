@@ -66,7 +66,7 @@ impl Constructor for PyClassMethod {
 
 impl PyClassMethod {
     pub fn new_ref(callable: PyObjectRef, ctx: &PyContext) -> PyRef<Self> {
-        PyRef::new_ref(Self { callable }, ctx.types.classmethod_type.clone(), None)
+        PyRef::new_ref(Self { callable }, ctx.types.classmethod_type.clone())
     }
 }
 

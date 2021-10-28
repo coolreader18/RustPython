@@ -338,7 +338,7 @@ impl PyStr {
     }
 
     pub fn new_ref(s: impl Into<Self>, ctx: &PyContext) -> PyRef<Self> {
-        PyRef::new_ref(s.into(), ctx.types.str_type.clone(), None)
+        PyRef::new_ref(s.into(), ctx.types.str_type.clone())
     }
 
     fn new_substr(&self, s: String) -> Self {

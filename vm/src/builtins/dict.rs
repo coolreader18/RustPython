@@ -55,7 +55,7 @@ impl PyValue for PyDict {
 
 impl PyDict {
     pub fn new_ref(ctx: &PyContext) -> PyRef<Self> {
-        PyRef::new_ref(Self::default(), ctx.types.dict_type.clone(), None)
+        PyRef::new_ref(Self::default(), ctx.types.dict_type.clone())
     }
 }
 

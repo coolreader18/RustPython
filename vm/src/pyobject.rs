@@ -1,11 +1,12 @@
 use crate::common::{
+    field_offset::FieldOffset,
     lock::{PyRwLock, PyRwLockReadGuard},
     rc::PyRc,
     static_cell,
 };
 pub use crate::pyobjectrc::{
-    PyGenericObject, PyObject, PyObjectRef, PyObjectView, PyObjectWeak, PyObjectWrap, PyRef,
-    PyWeakRef,
+    InstanceDict, PyGenericObject, PyObject, PyObjectRef, PyObjectView, PyObjectWeak, PyObjectWrap,
+    PyRef, PyWeakRef, WeakRefList,
 };
 use crate::{
     builtins::{
@@ -96,7 +97,7 @@ impl PyContext {
 
         #[inline]
         fn create_object<T: PyObjectPayload + PyValue>(payload: T, cls: &PyTypeRef) -> PyRef<T> {
-            PyRef::new_ref(payload, cls.clone(), None)
+            PyRef::new_ref(payload, cls.clone())
         }
 
         let none = create_object(PyNone, PyNone::static_type());
@@ -104,7 +105,7 @@ impl PyContext {
         let not_implemented = create_object(PyNotImplemented, PyNotImplemented::static_type());
 
         let int_cache_pool = (Self::INT_CACHE_POOL_MIN..=Self::INT_CACHE_POOL_MAX)
-            .map(|v| PyRef::new_ref(PyInt::from(BigInt::from(v)), types.int_type.clone(), None))
+            .map(|v| PyRef::new_ref(PyInt::from(BigInt::from(v)), types.int_type.clone()))
             .collect();
 
         let true_value = create_object(PyInt::from(1), &types.bool_type);
@@ -114,12 +115,11 @@ impl PyContext {
             PyTuple::new_unchecked(Vec::new().into_boxed_slice()),
             &types.tuple_type,
         );
-        let empty_frozenset =
-            PyRef::new_ref(PyFrozenSet::default(), types.frozenset_type.clone(), None);
+        let empty_frozenset = PyRef::new_ref(PyFrozenSet::default(), types.frozenset_type.clone());
 
         let string_cache = Dict::default();
 
-        let new_str = PyRef::new_ref(pystr::PyStr::from("__new__"), types.str_type.clone(), None);
+        let new_str = PyRef::new_ref(pystr::PyStr::from("__new__"), types.str_type.clone());
         let slot_new_wrapper = create_object(
             PyNativeFuncDef::new(PyType::__new__.into_func(), new_str).into_function(),
             &types.builtin_function_or_method_type,
@@ -174,7 +174,7 @@ impl PyContext {
                 return self.int_cache_pool[inner_idx].clone();
             }
         }
-        PyRef::new_ref(PyInt::from(i), self.types.int_type.clone(), None)
+        PyRef::new_ref(PyInt::from(i), self.types.int_type.clone())
     }
 
     #[inline]
@@ -185,11 +185,11 @@ impl PyContext {
                 return self.int_cache_pool[inner_idx].clone();
             }
         }
-        PyRef::new_ref(PyInt::from(i.clone()), self.types.int_type.clone(), None)
+        PyRef::new_ref(PyInt::from(i.clone()), self.types.int_type.clone())
     }
 
     pub fn new_float(&self, value: f64) -> PyRef<PyFloat> {
-        PyRef::new_ref(PyFloat::from(value), self.types.float_type.clone(), None)
+        PyRef::new_ref(PyFloat::from(value), self.types.float_type.clone())
     }
 
     pub fn new_str(&self, s: impl Into<pystr::PyStr>) -> PyRef<PyStr> {
@@ -273,7 +273,6 @@ impl PyContext {
         PyRef::new_ref(
             PyGetSet::new(name.into(), class).with_get(f),
             self.types.getset_type.clone(),
-            None,
         )
     }
 
@@ -291,16 +290,15 @@ impl PyContext {
         PyRef::new_ref(
             PyGetSet::new(name.into(), class).with_get(g).with_set(s),
             self.types.getset_type.clone(),
-            None,
         )
     }
 
     pub fn new_base_object(&self, class: PyTypeRef, dict: Option<PyDictRef>) -> PyObjectRef {
-        debug_assert_eq!(
-            class.slots.flags.contains(PyTypeFlags::HAS_DICT),
-            dict.is_some()
-        );
-        PyGenericObject::new(object::PyBaseObject, class, dict)
+        if let Some(dict) = dict {
+            PyGenericObject::new(object::PyUserObject::new(dict), class)
+        } else {
+            PyGenericObject::new(object::PyBaseObject, class)
+        }
     }
 }
 
@@ -806,24 +804,18 @@ pub trait PyValue: fmt::Debug + PyThreadingConstraint + Sized + 'static {
         None
     }
 
-    fn _into_ref(self, cls: PyTypeRef, vm: &VirtualMachine) -> PyRef<Self> {
-        let dict = if cls.slots.flags.has_feature(PyTypeFlags::HAS_DICT) {
-            Some(vm.ctx.new_dict())
-        } else {
-            None
-        };
-        PyRef::new_ref(self, cls, dict)
-    }
+    const DICT: Option<FieldOffset<Self, InstanceDict>> = None;
+    const WEAKREFLIST: Option<FieldOffset<Self, WeakRefList>> = None;
 
     fn into_ref(self, vm: &VirtualMachine) -> PyRef<Self> {
         let cls = Self::class(vm);
-        self._into_ref(cls.clone(), vm)
+        PyRef::new_ref(self, cls.clone())
     }
 
     fn into_ref_with_type(self, vm: &VirtualMachine, cls: PyTypeRef) -> PyResult<PyRef<Self>> {
         let exact_class = Self::class(vm);
         if cls.issubclass(exact_class) {
-            Ok(self._into_ref(cls, vm))
+            Ok(PyRef::new_ref(self, cls))
         } else {
             Err(vm.new_type_error(format!(
                 "'{}' is not a subtype of '{}'",
@@ -838,9 +830,15 @@ pub trait PyValue: fmt::Debug + PyThreadingConstraint + Sized + 'static {
     }
 }
 
-pub trait PyObjectPayload: Any + fmt::Debug + PyThreadingConstraint + 'static {}
+pub trait PyObjectPayload: Any + fmt::Debug + PyThreadingConstraint + 'static {
+    const WEAKREFLIST: Option<FieldOffset<Self, WeakRefList>>;
+    const DICT: Option<FieldOffset<Self, InstanceDict>>;
+}
 
-impl<T: PyValue + 'static> PyObjectPayload for T {}
+impl<T: PyValue + 'static> PyObjectPayload for T {
+    const WEAKREFLIST: Option<FieldOffset<Self, WeakRefList>> = <T as PyValue>::WEAKREFLIST;
+    const DICT: Option<FieldOffset<Self, InstanceDict>> = <T as PyValue>::DICT;
+}
 
 pub trait PyClassDef {
     const NAME: &'static str;

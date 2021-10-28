@@ -5,6 +5,7 @@ use super::{
     tuple::PyTupleTyped, PyAsyncGen, PyCode, PyCoroutine, PyDictRef, PyGenerator, PyStrRef,
     PyTupleRef, PyTypeRef,
 };
+use crate::common::field_offset;
 use crate::common::lock::PyMutex;
 use crate::{
     bytecode,
@@ -33,6 +34,7 @@ pub struct PyFunction {
     closure: Option<PyTupleTyped<PyCellRef>>,
     defaults_and_kwdefaults: PyMutex<(Option<PyTupleRef>, Option<PyDictRef>)>,
     name: PyMutex<PyStrRef>,
+    dict: crate::InstanceDict,
     #[cfg(feature = "jit")]
     jitted_code: OnceCell<CompiledCode>,
 }
@@ -44,6 +46,7 @@ impl PyFunction {
         closure: Option<PyTupleTyped<PyCellRef>>,
         defaults: Option<PyTupleRef>,
         kw_only_defaults: Option<PyDictRef>,
+        dict: crate::InstanceDict,
     ) -> Self {
         let name = PyMutex::new(code.obj_name.clone());
         PyFunction {
@@ -52,6 +55,7 @@ impl PyFunction {
             closure,
             defaults_and_kwdefaults: PyMutex::new((defaults, kw_only_defaults)),
             name,
+            dict,
             #[cfg(feature = "jit")]
             jitted_code: OnceCell::new(),
         }
@@ -328,9 +332,16 @@ impl PyValue for PyFunction {
     fn class(vm: &VirtualMachine) -> &PyTypeRef {
         &vm.ctx.types.function_type
     }
+
+    const DICT: Option<field_offset::FieldOffset<Self, crate::InstanceDict>> =
+        Some(field_offset!(Self, dict));
 }
 
-#[pyimpl(with(GetDescriptor, Callable), flags(HAS_DICT, METHOD_DESCR))]
+#[pyimpl(
+    generic_setattr,
+    with(GetDescriptor, Callable),
+    flags(HAS_DICT, METHOD_DESCR)
+)]
 impl PyFunction {
     #[pyproperty(magic)]
     fn code(&self) -> PyRef<PyCode> {
@@ -497,7 +508,6 @@ impl PyBoundMethod {
         PyRef::new_ref(
             Self::new(object, function),
             ctx.types.bound_method_type.clone(),
-            None,
         )
     }
 }

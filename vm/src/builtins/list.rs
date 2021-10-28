@@ -66,7 +66,7 @@ impl IntoPyObject for Vec<PyObjectRef> {
 
 impl PyList {
     pub fn new_ref(elements: Vec<PyObjectRef>, ctx: &PyContext) -> PyRef<Self> {
-        PyRef::new_ref(Self::from(elements), ctx.types.list_type.clone(), None)
+        PyRef::new_ref(Self::from(elements), ctx.types.list_type.clone())
     }
 
     pub fn borrow_vec(&self) -> PyMappedRwLockReadGuard<'_, [PyObjectRef]> {

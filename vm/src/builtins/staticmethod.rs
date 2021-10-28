@@ -55,7 +55,7 @@ impl PyStaticMethod {
         F: IntoPyNativeFunc<FKind>,
     {
         let callable = PyBuiltinMethod::new_ref(name, class, f, ctx).into();
-        PyRef::new_ref(Self { callable }, ctx.types.staticmethod_type.clone(), None)
+        PyRef::new_ref(Self { callable }, ctx.types.staticmethod_type.clone())
     }
 }
 

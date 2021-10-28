@@ -3815,6 +3815,8 @@ mod fileio {
         closefd: AtomicCell<bool>,
         mode: AtomicCell<Mode>,
         seekable: AtomicCell<Option<bool>>,
+        #[dict]
+        dict: crate::InstanceDict,
     }
 
     #[derive(FromArgs)]
@@ -3829,7 +3831,7 @@ mod fileio {
         opener: Option<PyObjectRef>,
     }
 
-    #[pyimpl(flags(BASETYPE, HAS_DICT))]
+    #[pyimpl(generic_setattr, flags(BASETYPE, HAS_DICT))]
     impl FileIO {
         #[pyslot]
         fn slot_new(cls: PyTypeRef, _args: FuncArgs, vm: &VirtualMachine) -> PyResult {
@@ -3838,6 +3840,7 @@ mod fileio {
                 closefd: AtomicCell::new(false),
                 mode: AtomicCell::new(Mode::empty()),
                 seekable: AtomicCell::new(None),
+                dict: vm.ctx.new_dict().into(),
             }
             .into_pyresult_with_type(vm, cls)
         }

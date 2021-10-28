@@ -1,9 +1,10 @@
 use super::{PyDict, PyDictRef, PyList, PyStr, PyStrRef, PyType, PyTypeRef};
-use crate::common::hash::PyHash;
+use crate::common::{field_offset, hash::PyHash};
 use crate::{
-    function::FuncArgs, types::PyComparisonOp, utils::Either, IdProtocol, ItemProtocol,
-    PyArithmeticValue, PyAttributes, PyClassImpl, PyComparisonValue, PyContext, PyGenericObject,
-    PyObject, PyObjectRef, PyResult, PyValue, TypeProtocol, VirtualMachine,
+    function::FuncArgs, types::PyComparisonOp, utils::Either, IdProtocol, InstanceDict,
+    ItemProtocol, PyArithmeticValue, PyAttributes, PyClassImpl, PyComparisonValue, PyContext,
+    PyGenericObject, PyObject, PyObjectRef, PyResult, PyValue, TypeProtocol, VirtualMachine,
+    WeakRefList,
 };
 
 /// object()
@@ -27,14 +28,8 @@ impl PyValue for PyBaseObject {
 impl PyBaseObject {
     /// Create and return a new object.  See help(type) for accurate signature.
     #[pyslot]
-    fn slot_new(cls: PyTypeRef, _args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-        // more or less __new__ operator
-        let dict = if cls.is(&vm.ctx.types.object_type) {
-            None
-        } else {
-            Some(vm.ctx.new_dict())
-        };
-        Ok(PyGenericObject::new(PyBaseObject, cls, dict))
+    fn slot_new(cls: PyTypeRef, _args: FuncArgs, _vm: &VirtualMachine) -> PyResult {
+        Ok(PyGenericObject::new(PyBaseObject, cls))
     }
 
     #[pyslot]
@@ -304,6 +299,37 @@ impl PyBaseObject {
     #[pymethod(magic)]
     fn hash(zelf: PyObjectRef, vm: &VirtualMachine) -> PyResult<PyHash> {
         Self::slot_hash(&zelf, vm)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PyUserObject {
+    dict: InstanceDict,
+    weakreflist: WeakRefList,
+}
+
+impl PyValue for PyUserObject {
+    fn class(vm: &VirtualMachine) -> &PyTypeRef {
+        &vm.ctx.types.object_type
+    }
+
+    const DICT: Option<field_offset::FieldOffset<Self, InstanceDict>> =
+        Some(field_offset!(Self, dict));
+    const WEAKREFLIST: Option<field_offset::FieldOffset<Self, WeakRefList>> =
+        Some(field_offset!(Self, weakreflist));
+}
+
+impl PyUserObject {
+    pub(crate) fn new(dict: PyDictRef) -> Self {
+        Self {
+            dict: dict.into(),
+            weakreflist: WeakRefList::new(),
+        }
+    }
+
+    /// Create and return a new object.  See help(type) for accurate signature.
+    pub(crate) fn slot_new(cls: PyTypeRef, _args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+        Ok(PyGenericObject::new(Self::new(vm.ctx.new_dict()), cls))
     }
 }
 

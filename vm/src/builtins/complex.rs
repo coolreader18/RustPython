@@ -188,7 +188,7 @@ impl Constructor for PyComplex {
 
 impl PyComplex {
     pub fn new_ref(value: Complex64, ctx: &PyContext) -> PyRef<Self> {
-        PyRef::new_ref(Self::from(value), ctx.types.complex_type.clone(), None)
+        PyRef::new_ref(Self::from(value), ctx.types.complex_type.clone())
     }
 
     pub fn to_complex(&self) -> Complex64 {

@@ -57,7 +57,7 @@ pub type PyByteArrayRef = PyRef<PyByteArray>;
 
 impl PyByteArray {
     pub fn new_ref(data: Vec<u8>, ctx: &PyContext) -> PyRef<Self> {
-        PyRef::new_ref(Self::from(data), ctx.types.bytearray_type.clone(), None)
+        PyRef::new_ref(Self::from(data), ctx.types.bytearray_type.clone())
     }
 
     fn from_inner(inner: PyBytesInner) -> Self {

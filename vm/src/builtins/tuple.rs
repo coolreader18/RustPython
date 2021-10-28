@@ -124,7 +124,7 @@ impl PyTuple {
             ctx.empty_tuple.clone()
         } else {
             let elements = elements.into_boxed_slice();
-            PyRef::new_ref(Self { elements }, ctx.types.tuple_type.clone(), None)
+            PyRef::new_ref(Self { elements }, ctx.types.tuple_type.clone())
         }
     }
 

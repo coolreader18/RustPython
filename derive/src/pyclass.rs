@@ -56,6 +56,7 @@ pub(crate) fn impl_pyimpl(attr: AttributeArgs, item: Item) -> Result<TokenStream
 
             let ty = &imp.self_ty;
             let ExtractedImplAttrs {
+                default_slots,
                 with_impl,
                 flags,
                 with_slots,
@@ -81,6 +82,7 @@ pub(crate) fn impl_pyimpl(attr: AttributeArgs, item: Item) -> Result<TokenStream
                     }
 
                     fn extend_slots(slots: &mut ::rustpython_vm::types::PyTypeSlots) {
+                        #default_slots
                         #with_slots
                         #slots_impl
                     }
@@ -671,7 +673,7 @@ impl ToTokens for GetSetNursery {
                             ::rustpython_vm::builtins::PyGetSet::new(#name.into(), class.clone())
                                 .with_get(&Self::#getter)
                                 #setter #deleter,
-                            ctx.types.getset_type.clone(), None)
+                            ctx.types.getset_type.clone())
                     );
                 }
             });
@@ -858,12 +860,15 @@ struct ExtractedImplAttrs {
     with_impl: TokenStream,
     with_slots: TokenStream,
     flags: TokenStream,
+    default_slots: TokenStream,
 }
 
 fn extract_impl_attrs(attr: AttributeArgs, item: &Ident) -> Result<ExtractedImplAttrs> {
     let mut withs = Vec::new();
     let mut with_slots = Vec::new();
     let mut flags = vec![quote! { ::rustpython_vm::types::PyTypeFlags::DEFAULT.bits() }];
+    let mut generic_setattr = false;
+    let mut no_getattr = false;
     #[cfg(debug_assertions)]
     {
         flags.push(quote! {
@@ -873,6 +878,15 @@ fn extract_impl_attrs(attr: AttributeArgs, item: &Ident) -> Result<ExtractedImpl
 
     for attr in attr {
         match attr {
+            NestedMeta::Meta(Meta::Path(path)) => {
+                if path_eq(&path, "generic_setattr") {
+                    generic_setattr = true;
+                } else if path_eq(&path, "nogetattr") {
+                    no_getattr = true;
+                } else {
+                    bail_span!(path, "Unknown pyimpl attribute")
+                }
+            }
             NestedMeta::Meta(Meta::List(syn::MetaList { path, nested, .. })) => {
                 if path_eq(&path, "with") {
                     for meta in nested {
@@ -927,6 +941,18 @@ fn extract_impl_attrs(attr: AttributeArgs, item: &Ident) -> Result<ExtractedImpl
         }
     }
 
+    let mut default_slots = quote!();
+    if !no_getattr {
+        default_slots.extend(quote! {
+            slots.getattro.store(Some(::rustpython_vm::types::generic_getattr));
+        });
+    }
+    if generic_setattr {
+        default_slots.extend(quote! {
+            slots.setattro.store(Some(::rustpython_vm::types::generic_setattr));
+        });
+    }
+
     Ok(ExtractedImplAttrs {
         with_impl: quote! {
             #(#withs)*
@@ -937,6 +963,7 @@ fn extract_impl_attrs(attr: AttributeArgs, item: &Ident) -> Result<ExtractedImpl
         with_slots: quote! {
             #(#with_slots)*
         },
+        default_slots,
     })
 }
 
