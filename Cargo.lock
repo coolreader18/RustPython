@@ -1994,6 +1994,7 @@ dependencies = [
  "libc",
  "log",
  "memchr",
+ "memoffset",
  "nix",
  "num-bigint",
  "num-complex",
