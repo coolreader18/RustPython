@@ -493,13 +493,6 @@ impl ErrorVec for Vec<syn::Error> {
     }
 }
 
-macro_rules! iter_chain {
-    ($($it:expr),*$(,)?) => {
-        ::std::iter::empty()
-            $(.chain(::std::iter::once($it)))*
-    };
-}
-
 pub(crate) fn iter_use_idents<'a, F, R: 'a>(item_use: &'a syn::ItemUse, mut f: F) -> Result<Vec<R>>
 where
     F: FnMut(&'a syn::Ident, bool) -> Result<R>,
@@ -589,4 +582,42 @@ fn func_sig(sig: &Signature) -> String {
 
 pub(crate) fn format_doc(sig: &str, doc: &str) -> String {
     format!("{sig}\n--\n\n{doc}")
+}
+
+macro_rules! match_tok {
+    (match $input:ident { $($matches:tt)* }) => {{
+        let input: syn::parse::ParseStream = $input;
+        let lookahead = input.lookahead1();
+        match_tok!(@match lookahead, input { $($matches)* })
+    }};
+
+    (@match $lookahead:ident, $input:ident { $binding:tt @ $tok:ty => $body:block $($rest:tt)* }) => {
+        match_tok!(@case $lookahead, $input, $binding, $tok, $body, { $($rest)* })
+    };
+    (@match $lookahead:ident, $input:ident { $tok:ty => $body:block $($rest:tt)* }) => {
+        match_tok!(@case $lookahead, $input, _, $tok, $body, { $($rest)* })
+    };
+    (@match $lookahead:ident, $input:ident { $binding:tt @ $tok:ty => $body:expr, $($rest:tt)* }) => {
+        match_tok!(@case $lookahead, $input, $binding, $tok, $body, { $($rest)* })
+    };
+    (@match $lookahead:ident, $input:ident { $tok:ty => $body:expr, $($rest:tt)* }) => {
+        match_tok!(@case $lookahead, $input, _, $tok, $body, { $($rest)* })
+    };
+
+    (@match $lookahead:ident, $input:ident {}) => {
+        return Err($lookahead.error())
+    };
+
+    (@case $lookahead:ident, $input:ident, $binding:tt, $tok:ty, $body:expr, { $($rest:tt)* }) => {
+        if $crate::util::peek1::<$tok>(&$lookahead) {
+            let $binding = $input.parse::<$tok>()?;
+            $body
+        } else {
+            match_tok!(@match $lookahead, $input { $($rest)* })
+        }
+    };
+}
+
+pub(crate) fn peek1<T: syn::token::Token>(lookahead: &syn::parse::Lookahead1) -> bool {
+    lookahead.peek(|x| -> T { match x {} })
 }

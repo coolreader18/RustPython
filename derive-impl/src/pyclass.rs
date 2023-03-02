@@ -175,7 +175,7 @@ pub(crate) fn impl_pyimpl(attr: AttributeArgs, item: Item) -> Result<TokenStream
             } else {
                 quote! {}
             };
-            let extra_methods = iter_chain![
+            let extra_methods = [
                 parse_quote! {
                     fn __extend_py_class(
                         ctx: &::rustpython_vm::Context,

@@ -19,7 +19,7 @@ mod pymodule;
 mod pypayload;
 mod pystructseq;
 
-use error::{extract_spans, Diagnostic};
+use error::Diagnostic;
 use proc_macro2::TokenStream;
 use quote::ToTokens;
 use rustpython_doc as doc;

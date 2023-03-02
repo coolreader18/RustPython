@@ -104,7 +104,7 @@ pub fn impl_pymodule(attr: AttributeArgs, module_item: Item) -> Result<TokenStre
     } else {
         quote!(None)
     };
-    items.extend(iter_chain![
+    items.extend([
         parse_quote! {
             pub(crate) const MODULE_NAME: &'static str = #module_name;
         },

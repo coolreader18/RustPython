@@ -13,7 +13,7 @@
 //! )
 //! ```
 
-use crate::{extract_spans, Diagnostic};
+use crate::Diagnostic;
 use once_cell::sync::Lazy;
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -26,9 +26,7 @@ use std::{
 use syn::{
     self,
     parse::{Parse, ParseStream, Result as ParseResult},
-    parse2,
-    spanned::Spanned,
-    Lit, LitByteStr, LitStr, Macro, Meta, MetaNameValue, Token,
+    parse2, LitByteStr, LitStr, Token,
 };
 
 static CARGO_MANIFEST_DIR: Lazy<PathBuf> = Lazy::new(|| {
@@ -233,83 +231,94 @@ impl CompilationSource {
     }
 }
 
-/// This is essentially just a comma-separated list of Meta nodes, aka the inside of a MetaList.
-struct PyCompileInput {
-    span: Span,
-    metas: Vec<Meta>,
+mod kw {
+    syn::custom_keyword!(stringify);
+    syn::custom_keyword!(mode);
+    syn::custom_keyword!(module_name);
+    syn::custom_keyword!(source);
+    syn::custom_keyword!(file);
+    syn::custom_keyword!(dir);
+    syn::custom_keyword!(crate_name);
 }
 
-impl PyCompileInput {
-    fn parse(&self, allow_dir: bool) -> Result<PyCompileArgs, Diagnostic> {
+fn check_duplicate<T>(x: &Option<T>, span: Span) -> syn::Result<()> {
+    if x.is_none() {
+        Ok(())
+    } else {
+        Err(syn::Error::new(span, "duplicate option"))
+    }
+}
+
+impl Parse for PyCompileArgs {
+    fn parse(input: ParseStream) -> ParseResult<Self> {
         let mut module_name = None;
         let mut mode = None;
         let mut source: Option<CompilationSource> = None;
         let mut crate_name = None;
 
-        fn assert_source_empty(source: &Option<CompilationSource>) -> Result<(), Diagnostic> {
-            if let Some(source) = source {
-                Err(Diagnostic::spans_error(
-                    source.span,
-                    "Cannot have more than one source",
-                ))
-            } else {
-                Ok(())
+        loop {
+            if input.is_empty() {
+                break;
             }
-        }
-
-        for meta in &self.metas {
-            if let Meta::NameValue(name_value) = meta {
-                let ident = match name_value.path.get_ident() {
-                    Some(ident) => ident,
-                    None => continue,
-                };
-                let check_str = || match &name_value.lit {
-                    Lit::Str(s) => Ok(s),
-                    _ => Err(err_span!(name_value.lit, "{ident} must be a string")),
-                };
-                if ident == "mode" {
-                    let s = check_str()?;
-                    match s.value().parse() {
-                        Ok(mode_val) => mode = Some(mode_val),
-                        Err(e) => bail_span!(s, "{}", e),
-                    }
-                } else if ident == "module_name" {
-                    module_name = Some(check_str()?.value())
-                } else if ident == "source" {
-                    assert_source_empty(&source)?;
-                    let code = check_str()?.value();
-                    source = Some(CompilationSource {
-                        kind: CompilationSourceKind::SourceCode(code),
-                        span: extract_spans(&name_value).unwrap(),
-                    });
-                } else if ident == "file" {
-                    assert_source_empty(&source)?;
-                    let path = check_str()?.value().into();
-                    source = Some(CompilationSource {
-                        kind: CompilationSourceKind::File(path),
-                        span: extract_spans(&name_value).unwrap(),
-                    });
-                } else if ident == "dir" {
-                    if !allow_dir {
-                        bail_span!(ident, "py_compile doesn't accept dir")
-                    }
-
-                    assert_source_empty(&source)?;
-                    let path = check_str()?.value().into();
-                    source = Some(CompilationSource {
-                        kind: CompilationSourceKind::Dir(path),
-                        span: extract_spans(&name_value).unwrap(),
-                    });
-                } else if ident == "crate_name" {
-                    let name = check_str()?.parse()?;
-                    crate_name = Some(name);
+            match_tok!(match input {
+                tok @ kw::mode => {
+                    check_duplicate(&mode, tok.span)?;
+                    input.parse::<Token![=]>()?;
+                    let s = input.call(parse_litstr)?;
+                    let mode_val = s
+                        .value()
+                        .parse()
+                        .map_err(|e| syn::Error::new(s.span(), e))?;
+                    mode = Some(mode_val);
                 }
+                tok @ kw::module_name => {
+                    check_duplicate(&module_name, tok.span)?;
+                    input.parse::<Token![=]>()?;
+                    module_name = Some(input.call(parse_litstr)?.value())
+                }
+                tok @ kw::source => {
+                    check_duplicate(&source, tok.span)?;
+                    input.parse::<Token![=]>()?;
+                    let code = input.call(parse_litstr)?;
+                    source = Some(CompilationSource {
+                        kind: CompilationSourceKind::SourceCode(code.value()),
+                        span: (tok.span, code.span()),
+                    });
+                }
+                tok @ kw::file => {
+                    check_duplicate(&source, tok.span)?;
+                    input.parse::<Token![=]>()?;
+                    let path = input.call(parse_litstr)?;
+                    source = Some(CompilationSource {
+                        kind: CompilationSourceKind::File(path.value().into()),
+                        span: (tok.span, path.span()),
+                    });
+                }
+                tok @ kw::dir => {
+                    check_duplicate(&source, tok.span)?;
+                    input.parse::<Token![=]>()?;
+                    let path = input.call(parse_litstr)?;
+                    source = Some(CompilationSource {
+                        kind: CompilationSourceKind::Dir(path.value().into()),
+                        span: (tok.span, path.span()),
+                    });
+                }
+                tok @ kw::crate_name => {
+                    check_duplicate(&crate_name, tok.span)?;
+                    input.parse::<Token![=]>()?;
+                    crate_name = Some(input.call(parse_litstr)?.parse()?);
+                }
+            });
+
+            if input.is_empty() {
+                break;
             }
+            input.parse::<Token![,]>()?;
         }
 
         let source = source.ok_or_else(|| {
             syn::Error::new(
-                self.span,
+                Span::call_site(),
                 "Must have either file or source in py_compile!()/py_freeze!()",
             )
         })?;
@@ -323,35 +332,26 @@ impl PyCompileInput {
     }
 }
 
-fn parse_meta(input: ParseStream) -> ParseResult<Meta> {
-    let path = input.call(syn::Path::parse_mod_style)?;
-    let eq_token: Token![=] = input.parse()?;
-    let span = input.span();
+fn parse_litstr(input: ParseStream) -> ParseResult<LitStr> {
     if input.peek(LitStr) {
-        Ok(Meta::NameValue(MetaNameValue {
-            path,
-            eq_token,
-            lit: Lit::Str(input.parse()?),
-        }))
-    } else if let Ok(mac) = input.parse::<Macro>() {
-        Ok(Meta::NameValue(MetaNameValue {
-            path,
-            eq_token,
-            lit: Lit::Str(LitStr::new(&mac.tokens.to_string(), mac.span())),
-        }))
+        input.parse()
+    } else if input.peek(kw::stringify) {
+        input.parse::<kw::stringify>()?;
+        input.parse::<Token![!]>()?;
+        let stringify_arg = input.step(|cursor| {
+            if let Some((proc_macro2::TokenTree::Group(g), next)) = cursor.token_tree() {
+                if g.delimiter() != proc_macro2::Delimiter::None {
+                    return Ok((g, next));
+                }
+            }
+            Err(cursor.error("expected delimiter"))
+        })?;
+        Ok(LitStr::new(
+            &stringify_arg.stream().to_string(),
+            stringify_arg.span(),
+        ))
     } else {
-        Err(syn::Error::new(span, "Expected string or stringify macro"))
-    }
-}
-
-impl Parse for PyCompileInput {
-    fn parse(input: ParseStream) -> ParseResult<Self> {
-        let span = input.cursor().span();
-        let metas = input
-            .parse_terminated::<Meta, Token![,]>(parse_meta)?
-            .into_iter()
-            .collect();
-        Ok(PyCompileInput { span, metas })
+        Err(input.error("expected string literal or stringify macro"))
     }
 }
 
@@ -366,8 +366,14 @@ pub fn impl_py_compile(
     input: TokenStream,
     compiler: &dyn Compiler,
 ) -> Result<TokenStream, Diagnostic> {
-    let input: PyCompileInput = parse2(input)?;
-    let args = input.parse(false)?;
+    let args: PyCompileArgs = parse2(input)?;
+
+    if matches!(args.source.kind, CompilationSourceKind::Dir(_)) {
+        return Err(Diagnostic::spans_error(
+            args.source.span,
+            "py_compile doesn't accept dir",
+        ));
+    }
 
     let crate_name = args.crate_name;
     let code = args
@@ -388,8 +394,7 @@ pub fn impl_py_freeze(
     input: TokenStream,
     compiler: &dyn Compiler,
 ) -> Result<TokenStream, Diagnostic> {
-    let input: PyCompileInput = parse2(input)?;
-    let args = input.parse(true)?;
+    let args: PyCompileArgs = parse2(input)?;
 
     let crate_name = args.crate_name;
     let code_map = args.source.compile(args.mode, args.module_name, compiler)?;
