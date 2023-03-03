@@ -49,12 +49,13 @@ enum CompilationSource {
     LibPath(PathBuf),
 }
 
+#[derive(Clone)]
 struct CompiledModule {
     code: CodeObject,
     package: bool,
 }
 
-pub trait Compiler {
+pub trait Compiler: Sync {
     fn compile(
         &self,
         source: &str,
@@ -92,13 +93,35 @@ impl CompilationSource {
                 return Ok(vec![(module_name, module)]);
             }
         }
-        dir.modules
-            .into_iter()
-            .map(|(module_name, (path, package))| {
-                let code = Self::compile_file(&path, mode, &module_name, compiler)?;
-                Ok((module_name, CompiledModule { code, package }))
-            })
-            .collect()
+        let do_compile = |(module_name, (path, package)): (String, (PathBuf, _))| {
+            let code = Self::compile_file(&path, mode, &module_name, compiler)?;
+            Ok((module_name, CompiledModule { code, package }))
+        };
+        if dir.modules.len() > 32 {
+            let nmodules = dir.modules.len();
+            let modules = std::sync::Mutex::new(dir.modules.into_iter().enumerate());
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::scope(|s| {
+                let nproc = std::thread::available_parallelism().unwrap().get();
+                for tx in itertools::repeat_n(tx, nproc) {
+                    let modules = &modules;
+                    std::thread::Builder::new()
+                        .stack_size(4 * 1024 * 1024)
+                        .spawn_scoped(s, move || loop {
+                            let Some((i, module)) = modules.lock().unwrap().next() else { return };
+                            tx.send((i, do_compile(module))).unwrap();
+                        })
+                        .unwrap();
+                }
+            });
+            let mut out = vec![None; nmodules];
+            for (i, module) in rx {
+                out[i] = Some(module);
+            }
+            out.into_iter().map(Option::unwrap).collect()
+        } else {
+            dir.modules.into_iter().map(do_compile).collect()
+        }
     }
 
     fn compile_file(
