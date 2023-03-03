@@ -21,6 +21,7 @@ use rustpython_compiler_core::{frozen_lib, CodeObject, Mode};
 use std::{
     collections::BTreeMap,
     env, fs,
+    ops::Not,
     path::{Path, PathBuf},
 };
 use syn::{
@@ -32,8 +33,15 @@ use syn::{
 static CARGO_MANIFEST_DIR: Lazy<PathBuf> = Lazy::new(|| {
     PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not present"))
 });
+fn resolve_path(path: &Path) -> std::borrow::Cow<'_, Path> {
+    if path.is_absolute() {
+        path.into()
+    } else {
+        CARGO_MANIFEST_DIR.join(path).into()
+    }
+}
 
-enum CompilationSourceKind {
+enum CompilationSource {
     /// Source is a File (Path)
     File(PathBuf),
     /// Direct Raw sourcecode
@@ -47,35 +55,23 @@ struct CompiledModule {
     package: bool,
 }
 
-struct CompilationSource {
-    kind: CompilationSourceKind,
-    span: (Span, Span),
-}
-
 pub trait Compiler {
     fn compile(
         &self,
         source: &str,
         mode: Mode,
-        module_name: String,
+        source_path: String,
     ) -> Result<CodeObject, Box<dyn std::error::Error>>;
 }
 
 impl CompilationSource {
-    fn compile_string<D: std::fmt::Display, F: FnOnce() -> D>(
-        &self,
+    fn compile_string(
         source: &str,
         mode: Mode,
-        module_name: String,
+        module_name: &str,
         compiler: &dyn Compiler,
-        origin: F,
-    ) -> Result<CodeObject, Diagnostic> {
-        compiler.compile(source, mode, module_name).map_err(|err| {
-            Diagnostic::spans_error(
-                self.span,
-                format!("Python compile error from {}: {}", origin(), err),
-            )
-        })
+    ) -> Result<CodeObject, Box<dyn std::error::Error>> {
+        compiler.compile(source, mode, format!("<frozen {module_name}>"))
     }
 
     fn compile(
@@ -83,59 +79,96 @@ impl CompilationSource {
         mode: Mode,
         module_name: String,
         compiler: &dyn Compiler,
-    ) -> Result<BTreeMap<String, CompiledModule>, Diagnostic> {
-        match &self.kind {
-            CompilationSourceKind::Dir(rel_path) => self.compile_dir(
-                &CARGO_MANIFEST_DIR.join(rel_path),
-                String::new(),
-                mode,
-                compiler,
-            ),
-            _ => Ok(btreemap! {
-                module_name.clone() => CompiledModule {
-                    code: self.compile_single(mode, module_name, compiler)?,
+    ) -> Result<Vec<(String, CompiledModule)>, String> {
+        match self {
+            CompilationSource::Dir(path) => DirWalker::from_dir(&resolve_path(path))?
+                .modules
+                .into_iter()
+                .map(|(module_name, (path, package))| {
+                    let module = Self::compile_file(&path, mode, &module_name, compiler)
+                        .map(|code| CompiledModule { code, package });
+                    (module_name, module)
+                })
+                .filter_map(|(module_name, res)| {
+                    let is_bad_syntax = res.is_err() && {
+                        let (parent, stem) =
+                            module_name.rsplit_once('.').unwrap_or(("", &module_name));
+                        // TODO: handle with macro arg rather than hard-coded path
+                        stem.starts_with("badsyntax_") || parent.ends_with(".encoded_modules")
+                    };
+                    is_bad_syntax.not().then(|| Ok((module_name, res?)))
+                })
+                .collect(),
+            _ => {
+                let module = CompiledModule {
+                    code: self.compile_single(mode, &module_name, compiler)?,
                     package: false,
-                },
-            }),
+                };
+                Ok(vec![(module_name, module)])
+            }
         }
+    }
+
+    fn compile_file(
+        path: &Path,
+        mode: Mode,
+        module_name: &str,
+        compiler: &dyn Compiler,
+    ) -> Result<CodeObject, String> {
+        let compile_path = |src_path: &Path| {
+            let source = fs::read_to_string(resolve_path(src_path))
+                .map_err(|err| format!("Error reading file {path:?}: {err}"))?;
+            Self::compile_string(&source, mode, module_name, compiler).map_err(|err| {
+                let rel_path = path.strip_prefix(&*CARGO_MANIFEST_DIR).unwrap_or(path);
+                format!("Python compile error in {}: {err}", rel_path.display())
+            })
+        };
+        compile_path(path).or_else(|e| {
+            if cfg!(windows) {
+                if let Ok(real_path) = fs::read_to_string(path.canonicalize().unwrap()) {
+                    let joined = path.parent().unwrap().join(real_path.trim());
+                    if joined.exists() {
+                        return compile_path(&joined);
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+            Err(e)
+        })
     }
 
     fn compile_single(
         &self,
         mode: Mode,
-        module_name: String,
+        module_name: &str,
         compiler: &dyn Compiler,
-    ) -> Result<CodeObject, Diagnostic> {
-        match &self.kind {
-            CompilationSourceKind::File(rel_path) => {
-                let path = CARGO_MANIFEST_DIR.join(rel_path);
-                let source = fs::read_to_string(&path).map_err(|err| {
-                    Diagnostic::spans_error(
-                        self.span,
-                        format!("Error reading file {path:?}: {err}"),
-                    )
-                })?;
-                self.compile_string(&source, mode, module_name, compiler, || rel_path.display())
+    ) -> Result<CodeObject, String> {
+        match self {
+            CompilationSource::File(path) => Self::compile_file(path, mode, module_name, compiler),
+            CompilationSource::SourceCode(code) => {
+                Self::compile_string(&textwrap::dedent(code), mode, module_name, compiler)
+                    .map_err(|err| format!("Python compile error in string literal: {err}"))
             }
-            CompilationSourceKind::SourceCode(code) => {
-                self.compile_string(&textwrap::dedent(code), mode, module_name, compiler, || {
-                    "string literal"
-                })
-            }
-            CompilationSourceKind::Dir(_) => {
+            CompilationSource::Dir(_) => {
                 unreachable!("Can't use compile_single with directory source")
             }
         }
     }
+}
 
-    fn compile_dir(
-        &self,
-        path: &Path,
-        parent: String,
-        mode: Mode,
-        compiler: &dyn Compiler,
-    ) -> Result<BTreeMap<String, CompiledModule>, Diagnostic> {
-        let mut code_map = BTreeMap::new();
+#[derive(Default)]
+struct DirWalker {
+    modules: BTreeMap<String, (PathBuf, bool)>,
+}
+
+impl DirWalker {
+    fn from_dir(path: &Path) -> Result<Self, String> {
+        let mut dir = Self::default();
+        dir.walk(path, "")?;
+        Ok(dir)
+    }
+    fn walk(&mut self, path: &Path, parent: &str) -> Result<(), String> {
         let paths = fs::read_dir(path)
             .or_else(|e| {
                 if cfg!(windows) {
@@ -145,89 +178,39 @@ impl CompilationSource {
                 }
                 Err(e)
             })
-            .map_err(|err| {
-                Diagnostic::spans_error(self.span, format!("Error listing dir {path:?}: {err}"))
-            })?;
+            .map_err(|err| format!("Error listing dir {path:?}: {err}"))?;
         for path in paths {
-            let path = path.map_err(|err| {
-                Diagnostic::spans_error(self.span, format!("Failed to list file: {err}"))
-            })?;
-            let path = path.path();
-            let file_name = path.file_name().unwrap().to_str().ok_or_else(|| {
-                Diagnostic::spans_error(self.span, format!("Invalid UTF-8 in file name {path:?}"))
-            })?;
-            if path.is_dir() {
-                code_map.extend(self.compile_dir(
-                    &path,
-                    if parent.is_empty() {
-                        file_name.to_string()
-                    } else {
-                        format!("{parent}.{file_name}")
-                    },
-                    mode,
-                    compiler,
-                )?);
-            } else if file_name.ends_with(".py") {
-                let stem = path.file_stem().unwrap().to_str().unwrap();
-                let is_init = stem == "__init__";
-                let module_name = if is_init {
-                    parent.clone()
-                } else if parent.is_empty() {
-                    stem.to_owned()
-                } else {
-                    format!("{parent}.{stem}")
-                };
-
-                let compile_path = |src_path: &Path| {
-                    let source = fs::read_to_string(src_path).map_err(|err| {
-                        Diagnostic::spans_error(
-                            self.span,
-                            format!("Error reading file {path:?}: {err}"),
-                        )
-                    })?;
-                    self.compile_string(&source, mode, module_name.clone(), compiler, || {
-                        path.strip_prefix(&*CARGO_MANIFEST_DIR)
-                            .ok()
-                            .unwrap_or(&path)
-                            .display()
-                    })
-                };
-                let code = compile_path(&path).or_else(|e| {
-                    if cfg!(windows) {
-                        if let Ok(real_path) = fs::read_to_string(path.canonicalize().unwrap()) {
-                            let joined = path.parent().unwrap().join(real_path.trim());
-                            if joined.exists() {
-                                return compile_path(&joined);
-                            } else {
-                                return Err(e);
-                            }
-                        }
-                    }
-                    Err(e)
-                });
-
-                let code = match code {
-                    Ok(code) => code,
-                    Err(_)
-                        if stem.starts_with("badsyntax_")
-                            | parent.ends_with(".encoded_modules") =>
-                    {
-                        // TODO: handle with macro arg rather than hard-coded path
-                        continue;
-                    }
-                    Err(e) => return Err(e),
-                };
-
-                code_map.insert(
-                    module_name,
-                    CompiledModule {
-                        code,
-                        package: is_init,
-                    },
-                );
-            }
+            let path = path.map_err(|err| format!("Failed to list file: {err}"))?;
+            self.add_entry(path.path(), parent)?;
         }
-        Ok(code_map)
+        Ok(())
+    }
+    fn add_entry(&mut self, path: PathBuf, parent: &str) -> Result<(), String> {
+        let file_name = path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .ok_or_else(|| format!("Invalid UTF-8 in file name {path:?}"))?;
+        if path.is_dir() {
+            if parent.is_empty() {
+                self.walk(&path, file_name)?
+            } else {
+                self.walk(&path, &[parent, ".", file_name].concat())?
+            }
+        } else if file_name.ends_with(".py") {
+            let stem = path.file_stem().unwrap().to_str().unwrap();
+            let is_init = stem == "__init__";
+            let module_name = if is_init {
+                parent.to_owned()
+            } else if parent.is_empty() {
+                stem.to_owned()
+            } else {
+                [parent, ".", stem].concat()
+            };
+
+            self.modules.insert(module_name, (path, is_init));
+        }
+        Ok(())
     }
 }
 
@@ -254,6 +237,7 @@ impl Parse for PyCompileArgs {
         let mut module_name = None;
         let mut mode = None;
         let mut source: Option<CompilationSource> = None;
+        let mut source_span = (Span::call_site(), Span::call_site());
         let mut crate_name = None;
 
         loop {
@@ -280,28 +264,22 @@ impl Parse for PyCompileArgs {
                     check_duplicate(&source, tok.span)?;
                     input.parse::<Token![=]>()?;
                     let code = input.call(parse_litstr)?;
-                    source = Some(CompilationSource {
-                        kind: CompilationSourceKind::SourceCode(code.value()),
-                        span: (tok.span, code.span()),
-                    });
+                    source = Some(CompilationSource::SourceCode(code.value()));
+                    source_span = (tok.span, code.span());
                 }
                 tok @ kw::file => {
                     check_duplicate(&source, tok.span)?;
                     input.parse::<Token![=]>()?;
                     let path = input.call(parse_litstr)?;
-                    source = Some(CompilationSource {
-                        kind: CompilationSourceKind::File(path.value().into()),
-                        span: (tok.span, path.span()),
-                    });
+                    source = Some(CompilationSource::File(path.value().into()));
+                    source_span = (tok.span, path.span());
                 }
                 tok @ kw::dir => {
                     check_duplicate(&source, tok.span)?;
                     input.parse::<Token![=]>()?;
                     let path = input.call(parse_litstr)?;
-                    source = Some(CompilationSource {
-                        kind: CompilationSourceKind::Dir(path.value().into()),
-                        span: (tok.span, path.span()),
-                    });
+                    source = Some(CompilationSource::Dir(path.value().into()));
+                    source_span = (tok.span, path.span());
                 }
                 tok @ kw::crate_name => {
                     check_duplicate(&crate_name, tok.span)?;
@@ -325,6 +303,7 @@ impl Parse for PyCompileArgs {
 
         Ok(PyCompileArgs {
             source,
+            source_span,
             mode: mode.unwrap_or(Mode::Exec),
             module_name: module_name.unwrap_or_else(|| "frozen".to_owned()),
             crate_name: crate_name.unwrap_or_else(|| syn::parse_quote!(::rustpython_vm::bytecode)),
@@ -357,6 +336,7 @@ fn parse_litstr(input: ParseStream) -> ParseResult<LitStr> {
 
 struct PyCompileArgs {
     source: CompilationSource,
+    source_span: (Span, Span),
     mode: Mode,
     module_name: String,
     crate_name: syn::Path,
@@ -368,9 +348,9 @@ pub fn impl_py_compile(
 ) -> Result<TokenStream, Diagnostic> {
     let args: PyCompileArgs = parse2(input)?;
 
-    if matches!(args.source.kind, CompilationSourceKind::Dir(_)) {
+    if matches!(args.source, CompilationSource::Dir(_)) {
         return Err(Diagnostic::spans_error(
-            args.source.span,
+            args.source_span,
             "py_compile doesn't accept dir",
         ));
     }
@@ -378,7 +358,8 @@ pub fn impl_py_compile(
     let crate_name = args.crate_name;
     let code = args
         .source
-        .compile_single(args.mode, args.module_name, compiler)?;
+        .compile_single(args.mode, &args.module_name, compiler)
+        .map_err(|msg| Diagnostic::spans_error(args.source_span, msg))?;
 
     let frozen = frozen_lib::FrozenCodeObject::encode(&code);
     let bytes = LitByteStr::new(&frozen.bytes, Span::call_site());
@@ -397,7 +378,10 @@ pub fn impl_py_freeze(
     let args: PyCompileArgs = parse2(input)?;
 
     let crate_name = args.crate_name;
-    let code_map = args.source.compile(args.mode, args.module_name, compiler)?;
+    let code_map = args
+        .source
+        .compile(args.mode, args.module_name, compiler)
+        .map_err(|msg| Diagnostic::spans_error(args.source_span, msg))?;
 
     let data = frozen_lib::FrozenLib::encode(code_map.iter().map(|(k, v)| {
         let v = frozen_lib::FrozenModule {
