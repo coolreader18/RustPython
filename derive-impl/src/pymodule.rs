@@ -6,7 +6,7 @@ use crate::util::{
 };
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned, ToTokens};
-use std::{collections::HashSet, str::FromStr};
+use std::{collections::BTreeSet, str::FromStr};
 use syn::{parse_quote, spanned::Spanned, Attribute, AttributeArgs, Ident, Item, Result};
 use syn_ext::ext::*;
 
@@ -350,7 +350,7 @@ impl ModuleItem for FunctionItem {
                     vec![py_name],
                 )
             } else {
-                let mut py_names = HashSet::new();
+                let mut py_names = BTreeSet::new();
                 py_names.insert(py_name);
                 for attr_index in self.pyattrs.iter().rev() {
                     let mut loop_unit = || {
