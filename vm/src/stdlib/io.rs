@@ -15,7 +15,7 @@ use crate::{
     convert::{IntoPyException, ToPyException},
     PyObjectRef, PyRef, PyResult, TryFromObject, VirtualMachine,
 };
-pub use _io::io_open as open;
+pub use _io::{io_open as open, OpenArgs};
 
 impl ToPyException for std::io::Error {
     fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
@@ -2370,6 +2370,16 @@ mod _io {
             vm.call_method(&textio.buffer, "writable", ())
         }
 
+        #[pygetset]
+        fn line_buffering(&self, vm: &VirtualMachine) -> PyResult<bool> {
+            Ok(self.lock(vm)?.line_buffering)
+        }
+
+        #[pygetset]
+        fn write_through(&self, vm: &VirtualMachine) -> PyResult<bool> {
+            Ok(self.lock(vm)?.write_through)
+        }
+
         #[pygetset(name = "_CHUNK_SIZE")]
         fn chunksize(&self, vm: &VirtualMachine) -> PyResult<usize> {
             Ok(self.lock(vm)?.chunk_size)
@@ -3564,17 +3574,17 @@ mod _io {
     #[derive(FromArgs)]
     pub struct OpenArgs {
         #[pyarg(any, default = "-1")]
-        buffering: isize,
+        pub buffering: isize,
         #[pyarg(any, default)]
-        encoding: Option<PyStrRef>,
+        pub encoding: Option<PyStrRef>,
         #[pyarg(any, default)]
-        errors: Option<PyStrRef>,
+        pub errors: Option<PyStrRef>,
         #[pyarg(any, default)]
-        newline: Option<PyStrRef>,
+        pub newline: Option<PyStrRef>,
         #[pyarg(any, default = "true")]
-        closefd: bool,
+        pub closefd: bool,
         #[pyarg(any, default)]
-        opener: Option<PyObjectRef>,
+        pub opener: Option<PyObjectRef>,
     }
     impl Default for OpenArgs {
         fn default() -> Self {
